@@ -362,12 +362,54 @@ class Legend(Artist):
         2 floats, which is interpreted as the lower-left corner of the legend
         in the normalized axes coordinate.
         """
-        # local import only to avoid circularity
-        from matplotlib.axes import Axes
-        from matplotlib.figure import Figure
-
         super().__init__()
 
+        self._set_font_properties(prop, fontsize)
+
+        #: A dictionary with the extra handler mappings for this Legend
+        #: instance.
+        self._custom_handler_map = handler_map
+
+        # _legend_box is a VPacker instance that contains all
+        # legend items and will be initialized from _init_legend_box()
+        # method.
+        self._legend_box = None
+
+        locals_view = locals()
+        self._set_default_parameters(locals_view)
+        del locals_view
+
+        if self.numpoints <= 0:
+            raise ValueError("numpoints must be > 0; it was %d" % numpoints)
+
+        self._set_parent(parent)
+
+        self._mode = mode
+        self.set_bbox_to_anchor(bbox_to_anchor, bbox_transform)
+
+        self._set_fancy_box_patch(
+            frameon=frameon, facecolor=facecolor, edgecolor=edgecolor,
+            framealpha=framealpha, shadow=shadow, fancybox=fancybox
+        )
+
+        labels, handles = self._filter_labels_and_handles(labels, handles)
+        if len(handles) < 2:
+            ncol = 1
+        self._ncol = ncol
+
+        # init with null renderer
+        self._init_legend_box(handles, labels, markerfirst)
+        self._update_label_colors(labelcolor)
+
+        self._set_loc(loc)
+        self.set_title(title, fontsize=title_fontsize)
+        self._draggable = None
+
+    def _set_font_properties(self, prop=None, fontsize=None):
+        """
+        Set the font properties, if no parameters are passed the default
+        fontsize is applied
+        """
         if prop is None:
             if fontsize is not None:
                 self.prop = FontProperties(size=fontsize)
@@ -381,58 +423,35 @@ class Legend(Artist):
 
         self._fontsize = self.prop.get_size_in_points()
 
-        self.texts = []
-        self.legendHandles = []
-        self._legend_title_box = None
-
-        #: A dictionary with the extra handler mappings for this Legend
-        #: instance.
-        self._custom_handler_map = handler_map
-
-        locals_view = locals()
+    def _set_default_parameters(self, parameters):
         for name in ["numpoints", "markerscale", "shadow", "columnspacing",
                      "scatterpoints", "handleheight", 'borderpad',
                      'labelspacing', 'handlelength', 'handletextpad',
                      'borderaxespad']:
-            if locals_view[name] is None:
+            if parameters[name] is None:
                 value = mpl.rcParams["legend." + name]
             else:
-                value = locals_view[name]
+                value = parameters[name]
             setattr(self, name, value)
-        del locals_view
-        # trim handles and labels if illegal label...
-        _lab, _hand = [], []
-        for label, handle in zip(labels, handles):
-            if isinstance(label, str) and label.startswith('_'):
-                cbook._warn_external('The handle {!r} has a label of {!r} '
-                                     'which cannot be automatically added to'
-                                     ' the legend.'.format(handle, label))
-            else:
-                _lab.append(label)
-                _hand.append(handle)
-        labels, handles = _lab, _hand
-
-        handles = list(handles)
-        if len(handles) < 2:
-            ncol = 1
-        self._ncol = ncol
-
-        if self.numpoints <= 0:
-            raise ValueError("numpoints must be > 0; it was %d" % numpoints)
 
         # introduce y-offset for handles of the scatter plot
-        if scatteryoffsets is None:
+        if parameters['scatteryoffsets'] is None:
             self._scatteryoffsets = np.array([3. / 8., 4. / 8., 2.5 / 8.])
         else:
-            self._scatteryoffsets = np.asarray(scatteryoffsets)
+            self._scatteryoffsets = np.asarray(parameters['scatteryoffsets'])
+
         reps = self.scatterpoints // len(self._scatteryoffsets) + 1
         self._scatteryoffsets = np.tile(self._scatteryoffsets,
                                         reps)[:self.scatterpoints]
 
-        # _legend_box is a VPacker instance that contains all
-        # legend items and will be initialized from _init_legend_box()
-        # method.
-        self._legend_box = None
+    def _set_parent(self, parent):
+        """
+        Set the parent container
+        """
+
+        # local import only to avoid circularity
+        from matplotlib.axes import Axes
+        from matplotlib.figure import Figure
 
         if isinstance(parent, Axes):
             self.isaxes = True
@@ -443,31 +462,32 @@ class Legend(Artist):
             self.set_figure(parent)
         else:
             raise TypeError("Legend needs either Axes or Figure as parent")
+
         self.parent = parent
 
-        self._loc_used_default = loc is None
-        if loc is None:
-            loc = mpl.rcParams["legend.loc"]
-            if not self.isaxes and loc in [0, 'best']:
-                loc = 'upper right'
-        if isinstance(loc, str):
-            if loc not in self.codes:
-                raise ValueError(
-                    "Unrecognized location {!r}. Valid locations are\n\t{}\n"
-                    .format(loc, '\n\t'.join(self.codes)))
+    def _filter_labels_and_handles(self, labels, handles):
+        """
+        trim handles and labels if illegal label...
+        """
+        _lab, _hand = [], []
+        for label, handle in zip(labels, handles):
+            if isinstance(label, str) and label.startswith('_'):
+                cbook._warn_external('The handle {!r} has a label of {!r} '
+                                     'which cannot be automatically added to'
+                                     ' the legend.'.format(handle, label))
             else:
-                loc = self.codes[loc]
-        if not self.isaxes and loc == 0:
-            raise ValueError(
-                "Automatic legend placement (loc='best') not implemented for "
-                "figure legend.")
+                _lab.append(label)
+                _hand.append(handle)
 
-        self._mode = mode
-        self.set_bbox_to_anchor(bbox_to_anchor, bbox_transform)
+        return _lab, _hand
 
-        # We use FancyBboxPatch to draw a legend frame. The location
-        # and size of the box will be updated during the drawing time.
-
+    def _set_fancy_box_patch(self, frameon=None, facecolor=None,
+                             edgecolor=None, framealpha=None, shadow=None,
+                             fancybox=None):
+        """
+        We use FancyBboxPatch to draw a legend frame. The location
+        and size of the box will be updated during the drawing time.
+        """
         if facecolor is None:
             facecolor = mpl.rcParams["legend.facecolor"]
         if facecolor == 'inherit':
@@ -499,21 +519,70 @@ class Legend(Artist):
         )
         self._set_artist_props(self.legendPatch)
 
-        # init with null renderer
-        self._init_legend_box(handles, labels, markerfirst)
+    def _set_artist_props(self, a):
+        """
+        Set the boilerplate props for artists added to axes.
+        """
+        a.set_figure(self.figure)
+        if self.isaxes:
+            # a.set_axes(self.axes)
+            a.axes = self.axes
 
-        tmp = self._loc_used_default
-        self._set_loc(loc)
-        self._loc_used_default = tmp  # ignore changes done by _set_loc
+        a.set_transform(self.get_transform())
 
-        # figure out title fontsize:
-        if title_fontsize is None:
-            title_fontsize = mpl.rcParams['legend.title_fontsize']
-        tprop = FontProperties(size=title_fontsize)
-        self.set_title(title, prop=tprop)
-        self._draggable = None
+    def _set_loc(self, loc=None):
+        """
+        _findoffset function will be provided to _legend_box and
+        _legend_box will draw itself at the location of the return
+        value of the _findoffset.
+        """
+        self._loc_used_default = loc is None
+        if loc is None:
+            loc = mpl.rcParams["legend.loc"]
+            if not self.isaxes and loc in [0, 'best']:
+                loc = 'upper right'
+        if isinstance(loc, str):
+            if loc not in self.codes:
+                raise ValueError(
+                    "Unrecognized location {!r}. Valid locations are\n\t{}\n"
+                    .format(loc, '\n\t'.join(self.codes)))
+            else:
+                loc = self.codes[loc]
+        if not self.isaxes and loc == 0:
+            raise ValueError(
+                "Automatic legend placement (loc='best') not implemented for "
+                "figure legend.")
 
-        # set the text color
+        self._loc_real = loc
+        self.stale = True
+        self._legend_box.set_offset(self._findoffset)
+
+    def _get_loc(self):
+        return self._loc_real
+
+    _loc = property(_get_loc, _set_loc)
+
+    def _findoffset(self, width, height, xdescent, ydescent, renderer):
+        """Helper function to locate the legend."""
+
+        if self._loc == 0:  # "best".
+            x, y = self._find_best_position(width, height, renderer)
+        elif self._loc in Legend.codes.values():  # Fixed location.
+            bbox = Bbox.from_bounds(0, 0, width, height)
+            x, y = self._get_anchored_bbox(self._loc, bbox,
+                                           self.get_bbox_to_anchor(),
+                                           renderer)
+        else:  # Axes or figure coordinates.
+            fx, fy = self._loc
+            bbox = self.get_bbox_to_anchor()
+            x, y = bbox.x0 + bbox.width * fx, bbox.y0 + bbox.height * fy
+
+        return x + xdescent, y + ydescent
+
+    def _update_label_colors(self, labelcolor=None):
+        """
+        Set the text color of the labels
+        """
 
         color_getters = {  # getter function depends on line or patch
             'linecolor':       ['get_color',           'get_facecolor'],
@@ -542,48 +611,6 @@ class Legend(Artist):
         else:
             raise ValueError("Invalid argument for labelcolor : %s" %
                              str(labelcolor))
-
-    def _set_artist_props(self, a):
-        """
-        Set the boilerplate props for artists added to axes.
-        """
-        a.set_figure(self.figure)
-        if self.isaxes:
-            # a.set_axes(self.axes)
-            a.axes = self.axes
-
-        a.set_transform(self.get_transform())
-
-    def _set_loc(self, loc):
-        # find_offset function will be provided to _legend_box and
-        # _legend_box will draw itself at the location of the return
-        # value of the find_offset.
-        self._loc_used_default = False
-        self._loc_real = loc
-        self.stale = True
-        self._legend_box.set_offset(self._findoffset)
-
-    def _get_loc(self):
-        return self._loc_real
-
-    _loc = property(_get_loc, _set_loc)
-
-    def _findoffset(self, width, height, xdescent, ydescent, renderer):
-        """Helper function to locate the legend."""
-
-        if self._loc == 0:  # "best".
-            x, y = self._find_best_position(width, height, renderer)
-        elif self._loc in Legend.codes.values():  # Fixed location.
-            bbox = Bbox.from_bounds(0, 0, width, height)
-            x, y = self._get_anchored_bbox(self._loc, bbox,
-                                           self.get_bbox_to_anchor(),
-                                           renderer)
-        else:  # Axes or figure coordinates.
-            fx, fy = self._loc
-            bbox = self.get_bbox_to_anchor()
-            x, y = bbox.x0 + bbox.width * fx, bbox.y0 + bbox.height * fy
-
-        return x + xdescent, y + ydescent
 
     @allow_rasterization
     def draw(self, renderer):
@@ -862,10 +889,12 @@ class Legend(Artist):
         r"""Return the list of `~.text.Text`\s in the legend."""
         return silent_list('Text', self.texts)
 
-    def set_title(self, title, prop=None):
+    def set_title(self, title, prop=None, fontsize=None):
         """
         Set the legend title. Fontproperties can be optionally set
-        with *prop* parameter.
+        with *prop* parameter, if the prop parameter is `None` or
+        omitted, than *fontsize* will be used, if that is omitted
+        as well the default legend.title_fontsize is used.
         """
         self._legend_title_box._text.set_text(title)
         if title:
@@ -875,9 +904,13 @@ class Legend(Artist):
             self._legend_title_box._text.set_visible(False)
             self._legend_title_box.set_visible(False)
 
-        if prop is not None:
-            self._legend_title_box._text.set_fontproperties(prop)
+        if prop is None:
+            if fontsize is None:
+                fontsize = mpl.rcParams['legend.title_fontsize']
 
+            prop = FontProperties(size=fontsize)
+
+        self._legend_title_box._text.set_fontproperties(prop)
         self.stale = True
 
     def get_title(self):
